@@ -20,6 +20,7 @@ index-state:
 packages: 
     Utilities
     simple-mint-sc/On-Chain
+    even-odd-state-machine
 
 -- We never, ever, want this.
 write-ghc-environment-files: never
