@@ -21,6 +21,7 @@ packages:
     Utilities
     simple-mint-sc/On-Chain
     even-odd-state-machine
+    simple-stablecoin/On-Chain
 
 -- We never, ever, want this.
 write-ghc-environment-files: never
