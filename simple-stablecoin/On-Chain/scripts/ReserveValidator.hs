@@ -14,55 +14,74 @@ import Plutus.V2.Ledger.Api
     ( ScriptContext(scriptContextTxInfo),
       PubKeyHash,
       Datum(Datum),
-      TxInfo (txInfoOutputs),
+      TxInfo (txInfoOutputs, TxInfo, txInfoMint, txInfoReferenceInputs),
       OutputDatum(OutputDatumHash, NoOutputDatum, OutputDatum),
-      TxOut(txOutDatum, txOutValue), BuiltinData, Validator, mkValidatorScript, UnsafeFromData (unsafeFromBuiltinData) )
+      TxOut(txOutDatum, txOutValue, txOutAddress), BuiltinData, Validator, mkValidatorScript, UnsafeFromData (unsafeFromBuiltinData), ValidatorHash, adaToken, TxInInfo (txInInfoResolved, TxInInfo), Address )
 import Plutus.V2.Ledger.Contexts
-    ( findDatum, txSignedBy, getContinuingOutputs )    
+    ( findDatum, txSignedBy, getContinuingOutputs, valueProduced, scriptOutputsAt )
 import PlutusTx
     ( unstableMakeIsData,
       FromData(fromBuiltinData),
       makeLift, compile, applyCode, liftCode, CompiledCode )
 import PlutusTx.Prelude
-    ( Bool,
+    ( Bool (..),
       Integer,
-      Maybe(..), traceIfFalse, ($), (&&), head, Eq ((==)), (.)
+      Maybe(..), traceIfFalse, ($), (&&), head, Eq ((==)), (.), not, negate, traceError, (*), filter
       )
-import           Prelude                    (Show (show), undefined, IO)
+import           Prelude                    (Show (show), undefined, IO, Ord ((>)), lookup)
 import Plutus.V1.Ledger.Value
-    ( AssetClass(AssetClass), assetClassValueOf )
+    ( AssetClass(AssetClass), assetClassValueOf, adaSymbol )
 import Data.Aeson (Value(Bool))
 import Utilities (wrapValidator, writeCodeToFile)
+import OracleValidator (OracleDatum (rate))
 
----------------------------------------------------------------------------------------------------
------------------------------ ON-CHAIN: HELPER FUNCTIONS/TYPES ------------------------------------
 
-{-# INLINABLE parseOracleDatum #-}
-parseOracleDatum :: TxOut -> TxInfo -> Maybe Integer    --  We check and parse the Datum of the output UTxO
-parseOracleDatum o info = case txOutDatum o of
-    NoOutputDatum -> Nothing
-    OutputDatum (Datum d) -> PlutusTx.fromBuiltinData d     -- Inline datum: just parse the datum (check if it is an Integer)
-    OutputDatumHash dh -> do
-                        Datum d <- findDatum dh info        -- Datum's hash: find the actual datum from the ScriptContext
-                        PlutusTx.fromBuiltinData d          --               parse the datum
+data ReserveParams = ReserveParams {
+    tokenMintingPolicy :: AssetClass,
+    oracleValidator :: ValidatorHash
+}
+makeLift ''ReserveParams
 
----------------------------------------------------------------------------------------------------
------------------------------------ ON-CHAIN / VALIDATOR ------------------------------------------
-
-data ReserveParams = ReserveParams  
-    {
-        mintingPolicy :: ValidatorHash,
-        oracleValidator :: ValidatorHash
-    } 
-PlutusTx.makeLift ''ReserveParams
-
-{-# INLINABLE mkValidator #-}
-mkValidator :: ReserveParams -> () -> () -> ScriptContext -> Bool
-mkValidator col _ _ ctx = traceIfFalse "" not checkBurntAmount
+mkReserveValidator :: ReserveParams -> () -> () -> ScriptContext -> Bool
+mkReserveValidator rParams _ _ ctx = traceIfFalse "Insufficient tokens burnt!" checkSufficientTokens
     where
         info :: TxInfo
         info = scriptContextTxInfo ctx
 
-        checkBurntAmount :: Bool
-        checkBurntAmount = undefined
-        
+        -- ========= Logic to check if there are sufficient funds (ADA) given as input for the amount of tokens burnt ===========
+        totalAdaProduced :: Integer
+        totalAdaProduced = assetClassValueOf (valueProduced info) (AssetClass (adaSymbol, adaToken))
+
+        totalTokensBurnt :: Integer
+        totalTokensBurnt = negate $ assetClassValueOf (txInfoMint info) (tokenMintingPolicy rParams)
+
+        getOracleDatum :: Maybe OracleDatum
+        getOracleDatum = case scriptOutputsAt (oracleValidator rParams) info of
+                                [(OutputDatum (Datum d) , _)] -> fromBuiltinData d
+                                _                             -> traceError "Expected one Oracle UTxO!"
+
+        lookupAddress :: Address -> TxInInfo -> Bool
+        lookupAddress addr tinfo  = addr == txOutAddress (txInInfoResolved tinfo)
+
+        getOracleDatum' :: Maybe OracleDatum
+        getOracleDatum' = filter (lookupAddress (scriptHashAddress (oracleValidator rParams)))  txInfoReferenceInputs info
+
+
+        checkSufficientTokens :: Bool
+        checkSufficientTokens = case getOracleDatum of
+                                    Just dtm -> totalAdaProduced > rate dtm * totalTokensBurnt
+                                    Nothing  -> False
+
+wrappedReserveCode :: BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> ()
+wrappedReserveCode tkn_mint_pol oracle_val = wrapValidator $ mkReserveValidator params
+    where
+        params = ReserveParams {
+            tokenMintingPolicy = unsafeFromBuiltinData tkn_mint_pol,
+            oracleValidator = unsafeFromBuiltinData oracle_val
+        }
+
+compiledReserveCode :: CompiledCode (BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> ())
+compiledReserveCode = $$( compile [|| wrappedReserveCode ||] )
+
+saveReserveCode :: IO()
+saveReserveCode = writeCodeToFile "./assets/reserve.plutus" compiledReserveCode
