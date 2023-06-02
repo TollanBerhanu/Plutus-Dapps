@@ -125,9 +125,9 @@ RUN npm --version
 
 FROM nodejs as plutus
 
-RUN git clone https://github.com/input-output-hk/plutus-pioneer-program
-RUN cd plutus-pioneer-program/code && cabal update
-RUN cd plutus-pioneer-program/code && cabal build all
+# RUN git clone https://github.com/input-output-hk/plutus-pioneer-program
+# RUN cd plutus-pioneer-program/code && cabal update
+# RUN cd plutus-pioneer-program/code && cabal build all
 
 RUN echo "alias serve-docs='python3 -m http.server -d /workspace/docs/plutus-docs/haddock/'" >> ~/.bashrc
 RUN echo "source <(cardano-cli --bash-completion-script cardano-cli)" >> ~/.bashrc
