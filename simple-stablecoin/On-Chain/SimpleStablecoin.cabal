@@ -33,8 +33,8 @@ common common-all-tests
 library
     import:             common-all
     hs-source-dirs:     scripts
-    exposed-modules:    NFT
-                        Oracle
+    exposed-modules:    NFTPolicy
+                        OracleValidator
                         ReserveValidator
-                        -- TokenMintingPolicy
+                        TokenMintingPolicy
 						
