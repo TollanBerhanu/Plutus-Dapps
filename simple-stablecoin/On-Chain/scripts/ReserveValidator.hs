@@ -34,6 +34,7 @@ import Plutus.V1.Ledger.Value
 import Data.Aeson (Value(Bool))
 import Utilities (wrapValidator, writeCodeToFile)
 import OracleValidator (OracleDatum (rate))
+import Plutus.V1.Ledger.Address (scriptHashAddress)
 
 
 data ReserveParams = ReserveParams {
@@ -48,29 +49,37 @@ mkReserveValidator rParams _ _ ctx = traceIfFalse "Insufficient tokens burnt!" c
         info :: TxInfo
         info = scriptContextTxInfo ctx
 
-        -- ========= Logic to check if there are sufficient funds (ADA) given as input for the amount of tokens burnt ===========
+        -- ======== Code to extract the oracle datum from the reference inputs ==========
+        lookupOracleAddress :: TxInInfo -> Bool
+        lookupOracleAddress tinfo  = addr == txOutAddress (txInInfoResolved tinfo)   -- Check for the oracle UTxO by its address from reference TxInInfo
+            where
+                addr = scriptHashAddress (oracleValidator rParams)
+
+        oracleDatum :: OutputDatum
+        oracleDatum = txOutDatum $ txInInfoResolved oracleTxInInfo
+            where
+                oracleTxInInfos = filter lookupOracleAddress $ txInfoReferenceInputs info     -- Filter the oracle UTxO by its address (there might be another reference input UTxO
+                oracleTxInInfo = case oracleTxInInfos of                                            -- because we also execute the minting policy in the same txn
+                                    [o] -> o
+                                    _   -> traceError "Expected exactly one Oracle UTxO!"
+
+        getOracleDatum :: Maybe OracleDatum
+        getOracleDatum = case oracleDatum of
+                            OutputDatum (Datum d) -> fromBuiltinData d
+                            _             -> traceError "Invalid Oracle Datum!"
+
+        -- ========= Code to check if there are sufficient tokens burnt for the amount of ADA unlocked ===========
         totalAdaProduced :: Integer
         totalAdaProduced = assetClassValueOf (valueProduced info) (AssetClass (adaSymbol, adaToken))
 
         totalTokensBurnt :: Integer
         totalTokensBurnt = negate $ assetClassValueOf (txInfoMint info) (tokenMintingPolicy rParams)
 
-        getOracleDatum :: Maybe OracleDatum
-        getOracleDatum = case scriptOutputsAt (oracleValidator rParams) info of
-                                [(OutputDatum (Datum d) , _)] -> fromBuiltinData d
-                                _                             -> traceError "Expected one Oracle UTxO!"
-
-        lookupAddress :: Address -> TxInInfo -> Bool
-        lookupAddress addr tinfo  = addr == txOutAddress (txInInfoResolved tinfo)
-
-        getOracleDatum' :: Maybe OracleDatum
-        getOracleDatum' = filter (lookupAddress (scriptHashAddress (oracleValidator rParams)))  txInfoReferenceInputs info
-
-
         checkSufficientTokens :: Bool
         checkSufficientTokens = case getOracleDatum of
                                     Just dtm -> totalAdaProduced > rate dtm * totalTokensBurnt
                                     Nothing  -> False
+
 
 wrappedReserveCode :: BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> ()
 wrappedReserveCode tkn_mint_pol oracle_val = wrapValidator $ mkReserveValidator params
