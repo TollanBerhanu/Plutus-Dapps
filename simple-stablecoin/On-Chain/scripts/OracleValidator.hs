@@ -18,7 +18,7 @@ import Plutus.V2.Ledger.Api
       OutputDatum(OutputDatumHash, NoOutputDatum, OutputDatum),
       TxOut(txOutDatum, txOutValue, txOutAddress), BuiltinData, Validator, mkValidatorScript, UnsafeFromData (unsafeFromBuiltinData), TxInInfo (txInInfoResolved), CurrencySymbol, ValidatorHash )
 import Plutus.V2.Ledger.Contexts
-    ( findDatum, txSignedBy, getContinuingOutputs, findOwnInput, valueSpent, valueProduced )    
+    ( findDatum, txSignedBy, getContinuingOutputs, findOwnInput, valueSpent, valueProduced, valuePaidTo )    
 import PlutusTx
     ( unstableMakeIsData,
       FromData(fromBuiltinData),
@@ -26,7 +26,7 @@ import PlutusTx
 import PlutusTx.Prelude
     ( Bool (False, True),
       Integer,
-      Maybe(..), traceIfFalse, ($), (&&), head, Eq ((==)), (.), traceError, filter
+      Maybe(..), traceIfFalse, ($), (&&), head, Eq ((==)), (.), traceError, filter, not
       )
 import           Prelude                    (Show (show), undefined, IO)
 import Plutus.V1.Ledger.Value
@@ -49,15 +49,23 @@ data OracleDatum = OracleDatum {
 } deriving Show
 unstableMakeIsData ''OracleDatum
 
-mkOracleValidator :: OracleParams -> OracleDatum -> () -> ScriptContext -> Bool
-mkOracleValidator oParams _ _ ctx = traceIfFalse "Developer hasn't signed!" developerSigned &&
-                                    traceIfFalse "NFT missing on input!" nftOnInput &&
-                                    traceIfFalse "NFT missing on output!" nftOnOutput &&
-                                    traceIfFalse "Invalid oracle output datum!" checkOracleOpDatum
+data OracleRedeemer = Update | Delete
+unstableMakeIsData ''OracleRedeemer
+
+mkOracleValidator :: OracleParams -> OracleDatum -> OracleRedeemer -> ScriptContext -> Bool
+mkOracleValidator oParams _ oRedeemer ctx = case oRedeemer of
+                                                Update -> traceIfFalse "Developer hasn't signed!" developerSigned &&
+                                                          traceIfFalse "NFT missing on input!" nftOnInput &&
+                                                          traceIfFalse "NFT missing on output!" nftOnOutput &&
+                                                          traceIfFalse "Invalid oracle output datum!" checkOracleOpDatum
+
+                                                Delete -> traceIfFalse "Developer hasn't signed!" developerSigned &&
+                                                          traceIfFalse "NFT missing on input!" nftOnInput &&
+                                                          traceIfFalse "NFT must be sent back to the developer!" nftSentToDeveloper
     where
         info :: TxInfo
         info = scriptContextTxInfo ctx
-
+ 
         developerSigned :: Bool
         developerSigned = txSignedBy info $ oDeveloper oParams
 
@@ -72,8 +80,15 @@ mkOracleValidator oParams _ _ ctx = traceIfFalse "Developer hasn't signed!" deve
         nftOnOutput :: Bool
         nftOnOutput = 1 == assetClassValueOf (valueProduced info) (oNFT oParams)
 
+        nftSentToDeveloper :: Bool
+        nftSentToDeveloper = 1 == assetClassValueOf (valuePaidTo info (oDeveloper oParams)) (oNFT oParams)
+
         checkOracleOpDatum :: Bool
         checkOracleOpDatum = undefined
+        -- getOracleOutputDatum :: Maybe OracleDatum
+        -- getOracleOutputDatum = case scriptOutputsAt (oracleValidator rParams) info of
+        --                         [(OutputDatum (Datum d) , _)] -> fromBuiltinData d
+        --                         _                             -> traceError "Expected exactly one Oracle UTxO!"
 
                 -- CurrencySymbol    TokenName     Developer PKH   OracleDatum       ()        ScriptContext
 wrappedOracleCode :: BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> ()
