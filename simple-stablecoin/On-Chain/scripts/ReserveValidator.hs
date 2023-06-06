@@ -7,6 +7,7 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings  #-}
 {-# OPTIONS_GHC -Wno-unused-imports #-}
+{-# LANGUAGE NumericUnderscores #-}
 
 module ReserveValidator where
 
@@ -14,7 +15,7 @@ import Plutus.V2.Ledger.Api
     ( ScriptContext(scriptContextTxInfo),
       PubKeyHash,
       Datum(Datum),
-      TxInfo (txInfoOutputs, TxInfo, txInfoMint, txInfoReferenceInputs),
+      TxInfo (txInfoOutputs, TxInfo, txInfoMint, txInfoReferenceInputs, txInfoInputs, txInfoFee),
       OutputDatum(OutputDatumHash, NoOutputDatum, OutputDatum),
       TxOut(txOutDatum, txOutValue, txOutAddress), BuiltinData, Validator, mkValidatorScript, UnsafeFromData (unsafeFromBuiltinData), ValidatorHash, adaToken, TxInInfo (txInInfoResolved, TxInInfo), Address )
 import Plutus.V2.Ledger.Contexts
@@ -26,11 +27,11 @@ import PlutusTx
 import PlutusTx.Prelude
     ( Bool (..),
       Integer,
-      Maybe(..), traceIfFalse, ($), (&&), head, Eq ((==)), (.), not, negate, traceError, (*), filter
+      Maybe(..), traceIfFalse, ($), (&&), head, Eq ((==)), (.), not, negate, traceError, (*), filter, divide, foldl, (+), (-)
       )
 import           Prelude                    (Show (show), undefined, IO, Ord ((>)), lookup)
 import Plutus.V1.Ledger.Value
-    ( AssetClass(AssetClass), assetClassValueOf, adaSymbol )
+    ( AssetClass(AssetClass), assetClassValueOf, adaSymbol, valueOf )
 import Data.Aeson (Value(Bool))
 import Utilities (wrapValidator, writeCodeToFile)
 import OracleValidator (OracleDatum (rate), getOracleDatum)
@@ -44,7 +45,7 @@ data ReserveParams = ReserveParams {
 makeLift ''ReserveParams
 
 mkReserveValidator :: ReserveParams -> () -> () -> ScriptContext -> Bool
-mkReserveValidator rParams _ _ ctx = traceIfFalse "Insufficient tokens burnt!" checkSufficientTokens
+mkReserveValidator rParams _ _ ctx = traceIfFalse "Insufficient tokens burnt!" checkRightAmountConsumed
     where
         info :: TxInfo
         info = scriptContextTxInfo ctx
@@ -52,17 +53,33 @@ mkReserveValidator rParams _ _ ctx = traceIfFalse "Insufficient tokens burnt!" c
         oracleDatum :: Maybe OracleDatum
         oracleDatum = getOracleDatum info (oracleValidator rParams)
 
+        netAdaConsumed :: Integer       -- Net ADA = (the total ada values of UTxOs coumed from the reserve) - (the change we give back to the reserve) - (the txn fee paid by the user)
+        netAdaConsumed = totalOutputAda - totalInputAda - valueOf (txInfoFee info) adaSymbol adaToken
+            where
+                totalInputAda :: Integer            -- This should be the total amount of Ada UTxOs we consume from the ReserveValidator while burning
+                totalInputAda = foldl (\acc x -> acc + valueOf (txOutValue $ txInInfoResolved x) adaSymbol adaToken ) 0 allInputs
+                    where allInputs = txInfoInputs info             -- This is the list of all the input UTxOs of the txn (the ones we consume from the Reserve)
+            
+                totalOutputAda :: Integer           -- This should be the change we are giving back to the ReserveValidator while burning
+                totalOutputAda = foldl (\acc x -> acc + valueOf (txOutValue x) adaSymbol adaToken) 0 allOutputs
+                    where allOutputs = getContinuingOutputs ctx     -- This is the list of all the output UTxOs we pay to the Reserve (the change we give back) 
+            
         -- ========= Check if there are sufficient tokens burnt for the amount of ADA unlocked ===========
-        checkSufficientTokens :: Bool
-        checkSufficientTokens = case oracleDatum of
-                                    Just dtm -> totalAdaProduced > rate dtm * totalTokensBurnt
-                                    Nothing  -> False
+        requiredAdaForTokens :: Integer    -- Bool
+        requiredAdaForTokens = case oracleDatum of
+                                    Just d -> (totalTokensBurnt * 1_000_000) `divide` rate d    -- < totalAdaProduced
+                                    Nothing  -> traceError "ReserveValidator: Invalid 'rate' on Oracle Datum!"
             where 
-                totalAdaProduced :: Integer
-                totalAdaProduced = assetClassValueOf (valueProduced info) (AssetClass (adaSymbol, adaToken))
+                -- totalAdaProduced :: Integer
+                -- totalAdaProduced = assetClassValueOf (valueProduced info) (AssetClass (adaSymbol, adaToken))
 
                 totalTokensBurnt :: Integer
                 totalTokensBurnt = negate $ assetClassValueOf (txInfoMint info) (tokenMintingPolicy rParams)
+    
+        -- ========= Check if the right amount of funds are consumed from the reserve when burning Tokens =========
+        checkRightAmountConsumed :: Bool
+        checkRightAmountConsumed = netAdaConsumed == requiredAdaForTokens
+        
 
 
 wrappedReserveCode :: BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> ()
