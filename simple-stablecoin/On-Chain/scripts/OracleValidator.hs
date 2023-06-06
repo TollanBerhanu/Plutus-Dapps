@@ -52,12 +52,13 @@ unstableMakeIsData ''OracleDatum
 data OracleRedeemer = Update | Delete
 unstableMakeIsData ''OracleRedeemer
 
+{-# INLINABLE mkOracleValidator #-}
 mkOracleValidator :: OracleParams -> OracleDatum -> OracleRedeemer -> ScriptContext -> Bool
 mkOracleValidator oParams _ oRedeemer ctx = case oRedeemer of
                                                 Update -> traceIfFalse "Developer hasn't signed!" developerSigned &&
                                                           traceIfFalse "NFT missing on input!" nftOnInput &&
-                                                          traceIfFalse "NFT missing on output!" nftOnOutput &&
-                                                          traceIfFalse "Invalid oracle output datum!" checkOracleOpDatum
+                                                          traceIfFalse "NFT missing on output!" nftOnOutput 
+                                                        --   traceIfFalse "Invalid oracle output datum!" checkOracleOpDatum
 
                                                 Delete -> traceIfFalse "Developer hasn't signed!" developerSigned &&
                                                           traceIfFalse "NFT missing on input!" nftOnInput &&
@@ -83,14 +84,15 @@ mkOracleValidator oParams _ oRedeemer ctx = case oRedeemer of
         nftSentToDeveloper :: Bool
         nftSentToDeveloper = 1 == assetClassValueOf (valuePaidTo info (oDeveloper oParams)) (oNFT oParams)
 
-        checkOracleOpDatum :: Bool
-        checkOracleOpDatum = undefined
+        -- checkOracleOpDatum :: Bool
+        -- checkOracleOpDatum = undefined
         -- getOracleOutputDatum :: Maybe OracleDatum
         -- getOracleOutputDatum = case scriptOutputsAt (oracleValidator rParams) info of
         --                         [(OutputDatum (Datum d) , _)] -> fromBuiltinData d
         --                         _                             -> traceError "Expected exactly one Oracle UTxO!"
 
                 -- CurrencySymbol    TokenName     Developer PKH   OracleDatum       ()        ScriptContext
+{-# INLINABLE wrappedOracleCode #-}
 wrappedOracleCode :: BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> ()
 wrappedOracleCode curSym tn developer = wrapValidator $ mkOracleValidator oParams
     where 
@@ -108,6 +110,7 @@ saveOracleCode = writeCodeToFile "./assets/oracle.plutus" compiledOracleCode
 -- =============================================================== Helper functions for other scripts =====================================================
     
 -- ======== Code to extract the oracle datum from the reference inputs ==========
+{-# INLINABLE getOracleDatum #-}
 getOracleDatum :: TxInfo -> ValidatorHash -> Maybe OracleDatum
 getOracleDatum _info _oracleValHash = case oracleDatum of
                     OutputDatum (Datum d) -> fromBuiltinData d
