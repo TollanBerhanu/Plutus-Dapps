@@ -46,6 +46,7 @@ makeLift ''TokenMintParams
 -- data TokenRedeemer = Mint | Burn
 -- unstableMakeIsData ''TokenRedeemer
 
+{-# INLINABLE mkTokenMintingpolicy #-}
 mkTokenMintingpolicy :: TokenMintParams -> () -> ScriptContext -> Bool
 mkTokenMintingpolicy tParams () ctx =   traceIfFalse "Minting is not allowed!" (fst mint_BurnAllowed || not minting) && -- This is false when minting is'nt allowed, but we are minting
                                         traceIfFalse "Burning is not allowed!" (snd mint_BurnAllowed || minting) &&     -- This is false when burning is'nt allowed, but we are burning
@@ -105,7 +106,7 @@ mkTokenMintingpolicy tParams () ctx =   traceIfFalse "Minting is not allowed!" (
         --     where 
         --         foldOnInputs acc x = acc + valueOf (txOutValue $ txInInfoResolved x) adaSymbol adaToken
         
-
+{-# INLINABLE wrappedTokenMintingCode #-}
 wrappedTokenMintingCode :: BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> ()
 wrappedTokenMintingCode tknName developer oracle reserve = wrapPolicy $ mkTokenMintingpolicy params
     where
