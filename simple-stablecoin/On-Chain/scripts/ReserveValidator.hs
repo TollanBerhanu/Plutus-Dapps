@@ -44,8 +44,9 @@ data ReserveParams = ReserveParams {
 }
 makeLift ''ReserveParams
 
+{-# INLINABLE  mkReserveValidator #-}
 mkReserveValidator :: ReserveParams -> () -> () -> ScriptContext -> Bool
-mkReserveValidator rParams _ _ ctx = traceIfFalse "Insufficient tokens burnt!" checkRightAmountConsumed
+mkReserveValidator rParams _ _ ctx = traceIfFalse "The net value of ADA consumed doesn't match the required amount!" checkRightAmountConsumed
     where
         info :: TxInfo
         info = scriptContextTxInfo ctx
@@ -79,9 +80,8 @@ mkReserveValidator rParams _ _ ctx = traceIfFalse "Insufficient tokens burnt!" c
         -- ========= Check if the right amount of funds are consumed from the reserve when burning Tokens =========
         checkRightAmountConsumed :: Bool
         checkRightAmountConsumed = netAdaConsumed == requiredAdaForTokens
-        
 
-
+{-# INLINABLE wrappedReserveCode #-}
 wrappedReserveCode :: BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> ()
 wrappedReserveCode tkn_mint_pol oracle_val = wrapValidator $ mkReserveValidator params
     where
