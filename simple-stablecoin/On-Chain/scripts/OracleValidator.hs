@@ -26,7 +26,7 @@ import PlutusTx
 import PlutusTx.Prelude
     ( Bool (False, True),
       Integer,
-      Maybe(..), traceIfFalse, ($), (&&), head, Eq ((==)), (.), traceError, filter, not
+      Maybe(..), traceIfFalse, ($), (&&), head, Eq ((==)), (.), traceError, filter, not, isJust
       )
 import           Prelude                    (Show (show), undefined, IO)
 import Plutus.V1.Ledger.Value
@@ -57,8 +57,8 @@ mkOracleValidator :: OracleParams -> OracleDatum -> OracleRedeemer -> ScriptCont
 mkOracleValidator oParams _ oRedeemer ctx = case oRedeemer of
                                                 Update -> traceIfFalse "Developer hasn't signed!" developerSigned &&
                                                           traceIfFalse "NFT missing on input!" nftOnInput &&
-                                                          traceIfFalse "NFT missing on output!" nftOnOutput 
-                                                        --   traceIfFalse "Invalid oracle output datum!" checkOracleOpDatum
+                                                          traceIfFalse "NFT missing on output!" nftOnOutput &&
+                                                          traceIfFalse "Invalid oracle output datum!" checkOracleOpDatum
 
                                                 Delete -> traceIfFalse "Developer hasn't signed!" developerSigned &&
                                                           traceIfFalse "NFT missing on input!" nftOnInput &&
@@ -70,11 +70,6 @@ mkOracleValidator oParams _ oRedeemer ctx = case oRedeemer of
         developerSigned :: Bool
         developerSigned = txSignedBy info $ oDeveloper oParams
 
-        -- input :: TxInInfo
-        -- input = case findOwnInput ctx of
-        --                 Nothing -> traceError ""
-        --                 Just ip -> ip
-
         nftOnInput :: Bool
         nftOnInput =  1 == assetClassValueOf (valueSpent info) (oNFT oParams)
 
@@ -84,12 +79,18 @@ mkOracleValidator oParams _ oRedeemer ctx = case oRedeemer of
         nftSentToDeveloper :: Bool
         nftSentToDeveloper = 1 == assetClassValueOf (valuePaidTo info (oDeveloper oParams)) (oNFT oParams)
 
-        -- checkOracleOpDatum :: Bool
-        -- checkOracleOpDatum = undefined
-        -- getOracleOutputDatum :: Maybe OracleDatum
-        -- getOracleOutputDatum = case scriptOutputsAt (oracleValidator rParams) info of
-        --                         [(OutputDatum (Datum d) , _)] -> fromBuiltinData d
-        --                         _                             -> traceError "Expected exactly one Oracle UTxO!"
+        checkOracleOpDatum :: Bool
+        checkOracleOpDatum = isJust parsedDatum
+            where
+                opDatum :: OutputDatum
+                opDatum = case getContinuingOutputs ctx of
+                        [tOut] -> txOutDatum tOut
+                        _      -> traceError "Expected exactly 1 op UTxO to at the OracleValidator!"
+                parsedDatum :: Maybe OracleDatum
+                parsedDatum = case opDatum of
+                                OutputDatum (Datum d) -> fromBuiltinData d
+                                _                     -> traceError "Expected inline datum!"
+
 
                 -- CurrencySymbol    TokenName     Developer PKH   OracleDatum       ()        ScriptContext
 {-# INLINABLE wrappedOracleCode #-}
@@ -109,12 +110,12 @@ saveOracleCode = writeCodeToFile "./assets/oracle.plutus" compiledOracleCode
 
 -- =============================================================== Helper functions for other scripts =====================================================
     
--- ======== Code to extract the oracle datum from the reference inputs ==========
+-- ======== Code to extract the oracle datum from the reference input UTxOs ==========
 {-# INLINABLE getOracleDatum #-}
 getOracleDatum :: TxInfo -> ValidatorHash -> Maybe OracleDatum
 getOracleDatum _info _oracleValHash = case oracleDatum of
                     OutputDatum (Datum d) -> fromBuiltinData d
-                    _             -> traceError "Invalid Oracle Datum!"
+                    _                     -> traceError "Invalid Oracle Datum!"
     where
         lookupOracleAddress :: TxInInfo -> Bool
         lookupOracleAddress tinfo  = addr == txOutAddress (txInInfoResolved tinfo)   -- Check for the oracle UTxO by its address from reference TxInInfo
