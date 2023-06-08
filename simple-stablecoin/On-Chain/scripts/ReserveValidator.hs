@@ -34,7 +34,7 @@ import Plutus.V1.Ledger.Value
     ( AssetClass(AssetClass), assetClassValueOf, adaSymbol, valueOf )
 import Data.Aeson (Value(Bool))
 import Utilities (wrapValidator, writeCodeToFile)
-import OracleValidator (OracleDatum (rate), getOracleDatum)
+import OracleValidator (OracleDatum (rate), getOracleDatum, lovelaceValueOf)
 import Plutus.V1.Ledger.Address (scriptHashAddress)
 
 
@@ -58,11 +58,11 @@ mkReserveValidator rParams _ _ ctx = traceIfFalse "The net value of ADA consumed
         netAdaConsumed = totalOutputAda - totalInputAda - valueOf (txInfoFee info) adaSymbol adaToken
             where
                 totalInputAda :: Integer            -- This should be the total amount of Ada UTxOs we consume from the ReserveValidator while burning
-                totalInputAda = foldl (\acc x -> acc + valueOf (txOutValue $ txInInfoResolved x) adaSymbol adaToken ) 0 allInputs
+                totalInputAda = foldl (\acc x -> acc + lovelaceValueOf (txOutValue $ txInInfoResolved x)) 0 allInputs
                     where allInputs = txInfoInputs info             -- This is the list of all the input UTxOs of the txn (the ones we consume from the Reserve)
             
                 totalOutputAda :: Integer           -- This should be the change we are giving back to the ReserveValidator while burning
-                totalOutputAda = foldl (\acc x -> acc + valueOf (txOutValue x) adaSymbol adaToken) 0 allOutputs
+                totalOutputAda = foldl (\acc x -> acc + lovelaceValueOf (txOutValue x)) 0 allOutputs
                     where allOutputs = getContinuingOutputs ctx     -- This is the list of all the output UTxOs we pay to the Reserve (the change we give back) 
             
         -- ========= Check if there are sufficient tokens burnt for the amount of ADA unlocked ===========
@@ -81,6 +81,7 @@ mkReserveValidator rParams _ _ ctx = traceIfFalse "The net value of ADA consumed
         checkRightAmountConsumed :: Bool
         checkRightAmountConsumed = netAdaConsumed == requiredAdaForTokens
 
+-- ======================================================== Boilerplate: Wrap, compile and serialize =============================================================
 {-# INLINABLE wrappedReserveCode #-}
 wrappedReserveCode :: BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> ()
 wrappedReserveCode tkn_mint_pol oracle_val = wrapValidator $ mkReserveValidator params
