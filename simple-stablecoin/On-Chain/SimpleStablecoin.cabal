@@ -36,5 +36,8 @@ library
     exposed-modules:    NFTPolicy
                         OracleValidator
                         ReserveValidator
-                        TokenMintingPolicy
+                        StablecoinPolicy
+                        -- zOracleValidator
+                        -- zReserveValidator
+                        -- zTokenMintingPolicy
 						
