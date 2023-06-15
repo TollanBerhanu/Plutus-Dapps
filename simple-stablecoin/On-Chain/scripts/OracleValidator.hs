@@ -25,7 +25,7 @@ import PlutusTx
       makeLift, compile, applyCode, liftCode, CompiledCode)
 import PlutusTx.Prelude
     ( Bool (False, True),
-      Integer,
+      Integer ,
       Maybe(..), traceIfFalse, ($), (&&), head, Eq ((==)), (.), traceError, filter, not, isJust, (/=), (*), (-), Ord (..), negate, (+)
       )
 import           Prelude                    (Show (show), undefined, IO)
@@ -36,70 +36,30 @@ import Plutus.V1.Ledger.Address             (scriptHashAddress)
 -- Define the Oracle's parameter type
 data OracleParams = OracleParams {
     oNFT :: AssetClass ,
-    developerPKH :: PubKeyHash ,
-    reserveValidator :: ValidatorHash ,
-    tokenMintingPolicy :: AssetClass
+    developerPKH :: PubKeyHash
  }
 makeLift ''OracleParams
 
 -- Define the Oracle's datum type
 data OracleDatum = OracleDatum {
     rate :: Integer ,
-    canMint :: Bool ,
-    mintedAmount :: Integer
+    mintorburn :: (Bool, Bool)
 } deriving Show
 unstableMakeIsData ''OracleDatum
 
-data OracleRedeemer = Update | Toggle | ChangeAmount
-unstableMakeIsData ''OracleRedeemer
+-- data OracleRedeemer = Update
+-- unstableMakeIsData ''OracleRedeemer
 
 {-# INLINABLE mkOracleValidator #-}
-mkOracleValidator :: OracleParams -> OracleDatum -> OracleRedeemer -> ScriptContext -> Bool
-mkOracleValidator oParams _ oRedeemer ctx = case oRedeemer of
-                                                Update       -> traceIfFalse "Update: Developer hasn't signed!" developerSigned &&
-                                                                traceIfFalse "Update: NFT missing on input!" nftOnInput &&
-                                                                traceIfFalse "Update: NFT missing on output!" nftOnOutput &&
-                                                                traceIfFalse "Update: Invalid oracle output datum!" checkOracleOpDatum &&
-                                                                traceIfFalse "Update: You should only change the 'rate' value!" checkValidDeveloperUpdate &&
-                                                                traceIfFalse "Update: Incorrect amount in reserve based on rate change!" checkEnoughFundsInReserve
-
-                                                Toggle       -> traceIfFalse "Toggle: Developer hasn't signed!" developerSigned &&
-                                                                traceIfFalse "Toggle: NFT missing on input!" nftOnInput &&
-                                                                traceIfFalse "Toggle: NFT missing on output!" nftOnOutput &&
-                                                                traceIfFalse "Toggle: Invalid oracle output datum!" checkOracleOpDatum &&
-                                                                traceIfFalse "Toggle: You should only change the 'canMint' value!" checkValidDeveloperToggle
-
-                                                ChangeAmount -> traceIfFalse "ChangeAmount: NFT missing on input!" nftOnInput &&
-                                                                traceIfFalse "ChangeAmount: NFT missing on output!" nftOnOutput &&
-                                                                traceIfFalse "ChangeAmount: Invalid oracle output datum!" checkOracleOpDatum &&
-                                                                traceIfFalse "ChangeAmount: You should only change the 'mintedAmount' value!" checkValidMintUpdate &&
-                                                                traceIfFalse "ChangeAmount: Invalid 'mintedAmount' value based on amount minted/burnt!" correctAmountChanged
+mkOracleValidator :: OracleParams -> OracleDatum -> () -> ScriptContext -> Bool
+mkOracleValidator oParams _ _ ctx =     traceIfFalse "Update: Developer hasn't signed!" developerSigned &&
+                                        traceIfFalse "Update: NFT missing on input!" nftOnInput &&
+                                        traceIfFalse "Update: NFT missing on output!" nftOnOutput &&
+                                        traceIfFalse "Update: Invalid oracle output datum!" checkOracleOpDatum
+                                                                
     where
         info :: TxInfo
         info = scriptContextTxInfo ctx
-
-        oracleInputDatum :: OracleDatum
-        oracleInputDatum = case findOwnInput ctx of
-                            Just ip -> parseOracleDatum $ txOutDatum $ txInInfoResolved ip
-                            Nothing -> traceError "Expected 1 UTxO to be consumed from the Oracle!"
-
-        oracleOutputDatum :: OracleDatum
-        oracleOutputDatum = case getContinuingOutputs ctx of
-                                [tOut] -> parseOracleDatum $ txOutDatum tOut
-                                _      -> traceError "Expected exactly 1 output UTxO to at the OracleValidator!"
-
-        -- ======== Old and New states ========
-
-        oldRate = rate oracleInputDatum :: Integer
-        newRate = rate oracleOutputDatum :: Integer
-
-        oldCanMint = canMint oracleInputDatum :: Bool
-        newCanMint = canMint oracleOutputDatum :: Bool
-
-        oldMintedAmount = mintedAmount oracleInputDatum :: Integer
-        newMintedAmount = mintedAmount oracleOutputDatum :: Integer
-
-        -- =========== Common Conditions ============
 
         developerSigned :: Bool
         developerSigned = txSignedBy info $ developerPKH oParams
@@ -111,80 +71,41 @@ mkOracleValidator oParams _ oRedeemer ctx = case oRedeemer of
         nftOnOutput = 1 == assetClassValueOf (valueProduced info) (oNFT oParams)
 
         checkOracleOpDatum :: Bool  -- Check the type of the Oracle output datum
-        checkOracleOpDatum =  True -- isJust oracleOutputDatum
-
-
-        -- ================ Update Conditions ============
-
-        -- Check that the developer only changes the rate and nothing else
-        checkValidDeveloperUpdate :: Bool
-        checkValidDeveloperUpdate = (oldRate /= newRate)  &&  (oldCanMint == newCanMint)  &&  (oldMintedAmount == newMintedAmount)
-
-        -- Check that the developer claims the appropriate rewards (this is only relevant when there will extra funds in the reserve due to rate change)
-        developerClaimedRewards :: Integer -> Bool
-        developerClaimedRewards rewards = rewards == lovelaceValueOf (valuePaidTo info $ developerPKH oParams)
-
-        -- Check that the developer gives the appropirate funds to the reserve (this is only relevant when there will be less funds in the reserve due to rate change)
-        developerFundedReserve :: Integer -> Bool
-        developerFundedReserve funds = funds == lovelaceValueOf (valueLockedBy info $ reserveValidator oParams)
-
-        -- Check that the developer either funds the reserve or receives rewards based on changes in rate
-        checkEnoughFundsInReserve :: Bool
-        checkEnoughFundsInReserve = if valueDifference > 0
-                                        then developerFundedReserve valueDifference
-                                        else developerClaimedRewards $ negate valueDifference
-            where
-                    -- The no. of ADA available in the reserve must always match the no. of tokens in circulation as per the USD/ADA rate
-                valueDifference = (oldRate * oldMintedAmount) - (newRate * newMintedAmount)     -- The valueDifference is the old ADA/Token reserved minus the new ADA/Token reserved
-
-
-        -- ================ Toggle Conditions ============
-
-        -- Check that the developer only changes the canMint value and nothing else (The new canMint value must be different from the old canMint value)
-        checkValidDeveloperToggle :: Bool
-        checkValidDeveloperToggle = (oldRate == newRate)  &&  (oldCanMint /= newCanMint)  &&  (oldMintedAmount == newMintedAmount)
-
-
-        -- ================ ChangeAmount Conditions ============
-
-        -- Check that the Stablecoin owner only changes the mintedAmount value and nothing else
-        checkValidMintUpdate :: Bool
-        checkValidMintUpdate = (oldRate == newRate)  &&  (oldCanMint == newCanMint)  &&  (oldMintedAmount /= newMintedAmount)
-
-        -- Check that the Stablecoin owner updates the mintedAmount to the correct value
-        correctAmountChanged :: Bool
-        correctAmountChanged = (oldMintedAmount + amountMinted) == newMintedAmount
-
-        -- The amount of tokens minted/burned in the same txn (amountMinted will be negative if the tokens are actually being burned)
-        amountMinted :: Integer
-        amountMinted = assetClassValueOf (txInfoMint info) $ tokenMintingPolicy oParams
+        checkOracleOpDatum =  isJust $ case opDatum of
+                                        OutputDatum (Datum d) -> fromBuiltinData d :: Maybe OracleDatum
+                                        _                     -> traceError "Expected inline datum at the Oracle address!"
+            where 
+                opDatum :: OutputDatum
+                opDatum = case getContinuingOutputs ctx of
+                                    [tOut] -> txOutDatum tOut
+                                    _      -> traceError "Expected only one output at the Oracle address!"
 
 
 -- ======================================================== Boilerplate: Wrap, compile and serialize =============================================================
                 -- CurrencySymbol,  TokenName,  DeveloperPKH,  ReserveValidator, TokenMintingPolicy, OracleDatum, (),  ScriptContext
 {-# INLINABLE wrappedOracleCode #-}
-wrappedOracleCode :: BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> ()
-wrappedOracleCode curSym tn devPKH reserveVal tokenMintPol = wrapValidator $ mkOracleValidator oParams
+wrappedOracleCode :: BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> ()
+wrappedOracleCode curSym tn devPKH = wrapValidator $ mkOracleValidator oParams
     where
         oParams = OracleParams {
             oNFT = AssetClass (unsafeFromBuiltinData curSym, unsafeFromBuiltinData tn) ,
-            developerPKH = unsafeFromBuiltinData devPKH ,
-            reserveValidator = unsafeFromBuiltinData reserveVal ,
-            tokenMintingPolicy = unsafeFromBuiltinData tokenMintPol
+            developerPKH = unsafeFromBuiltinData devPKH 
         }
 
-compiledOracleCode :: CompiledCode (BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> ())
+compiledOracleCode :: CompiledCode (BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> ())
 compiledOracleCode = $$( compile [|| wrappedOracleCode ||] )
 
 saveOracleCode :: IO()
 saveOracleCode = writeCodeToFile "./assets/oracle.plutus" compiledOracleCode
 
+
+
 -- =============================================================== Helper functions for other scripts =====================================================
 
 -- ======== Code to extract the oracle datum from the reference input UTxOs ==========
-{-# INLINABLE getOracleDatum #-}
-getOracleDatum :: TxInfo -> ValidatorHash -> Maybe OracleDatum
-getOracleDatum _info _oracleValHash = case oracleDatum of
+{-# INLINABLE getOracleDatumFromRef #-}
+getOracleDatumFromRef :: TxInfo -> ValidatorHash -> Maybe OracleDatum
+getOracleDatumFromRef _info _oracleValHash = case oracleDatum of
                     OutputDatum (Datum d) -> fromBuiltinData d
                     _                     -> traceError "Invalid Oracle Datum!"
     where
