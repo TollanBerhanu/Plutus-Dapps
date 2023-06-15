@@ -27,33 +27,40 @@ import PlutusTx
 import PlutusTx.Prelude
     ( Bool (..),
       Integer,
-      Maybe(..), traceIfFalse, ($), (&&), head, Eq ((==)), (.), not, negate, traceError, (*), filter, divide, foldl, (+), (-)
+      Maybe(..), traceIfFalse, ($), (&&), head, Eq ((==)), (.), not, negate, traceError, (*), filter, divide, foldl, (+), (-), (||)
       )
 import           Prelude                    (Show (show), undefined, IO, Ord ((>)), lookup)
 import Plutus.V1.Ledger.Value
     ( AssetClass(AssetClass), assetClassValueOf, adaSymbol, valueOf )
 import Data.Aeson (Value(Bool))
 import Utilities (wrapValidator, writeCodeToFile)
-import OracleValidator (OracleDatum (rate), getOracleDatum, lovelaceValueOf)
+import OracleValidator (OracleDatum (rate), getOracleDatumFromRef, lovelaceValueOf)
 import Plutus.V1.Ledger.Address (scriptHashAddress)
 
 
 data ReserveParams = ReserveParams {
-    tokenMintingPolicy :: AssetClass,
-    oracleValidator :: ValidatorHash
+    tokenMintingPolicy :: AssetClass ,
+    oracleValidator :: ValidatorHash ,
+    developerPKH :: PubKeyHash
 }
 makeLift ''ReserveParams
 
 {-# INLINABLE  mkReserveValidator #-}
 mkReserveValidator :: ReserveParams -> () -> () -> ScriptContext -> Bool
-mkReserveValidator rParams _ _ ctx = traceIfFalse "The net value of ADA consumed doesn't match the required amount!" checkRightAmountConsumed
+mkReserveValidator rParams _ _ ctx =    traceIfFalse "You must burn your tokens to access the reserve unless you are an admin!" developerSigned  ||
+                                        traceIfFalse "The net value of ADA consumed doesn't match the required amount!" checkRightAmountConsumed
     where
         info :: TxInfo
         info = scriptContextTxInfo ctx
 
         oracleDatum :: Maybe OracleDatum
-        oracleDatum = getOracleDatum info (oracleValidator rParams)
+        oracleDatum = getOracleDatumFromRef info (oracleValidator rParams)
 
+        -- ========= Check if the developer has signed ===========
+        developerSigned :: Bool
+        developerSigned = txSignedBy info $ developerPKH rParams
+
+        -- =========== Calculate the net Ada consumed by the user when burning Stablecoins =========
         netAdaConsumed :: Integer       -- Net ADA = (the total ada values of UTxOs coumed from the reserve) - (the change we give back to the reserve) - (the txn fee paid by the user)
         netAdaConsumed = totalOutputAda - totalInputAda - valueOf (txInfoFee info) adaSymbol adaToken
             where
@@ -64,7 +71,7 @@ mkReserveValidator rParams _ _ ctx = traceIfFalse "The net value of ADA consumed
                 totalOutputAda :: Integer           -- This should be the change we are giving back to the ReserveValidator while burning
                 totalOutputAda = foldl (\acc x -> acc + lovelaceValueOf (txOutValue x)) 0 allOutputs
                     where allOutputs = getContinuingOutputs ctx     -- This is the list of all the output UTxOs we pay to the Reserve (the change we give back) 
-            
+
         -- ========= Check if there are sufficient tokens burnt for the amount of ADA unlocked ===========
         requiredAdaForTokens :: Integer    -- Bool
         requiredAdaForTokens = case oracleDatum of
@@ -83,15 +90,16 @@ mkReserveValidator rParams _ _ ctx = traceIfFalse "The net value of ADA consumed
 
 -- ======================================================== Boilerplate: Wrap, compile and serialize =============================================================
 {-# INLINABLE wrappedReserveCode #-}
-wrappedReserveCode :: BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> ()
-wrappedReserveCode tkn_mint_pol oracle_val = wrapValidator $ mkReserveValidator params
+wrappedReserveCode :: BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> ()
+wrappedReserveCode tkn_mint_pol oracle_val dev_PKH = wrapValidator $ mkReserveValidator params
     where
         params = ReserveParams {
-            tokenMintingPolicy = unsafeFromBuiltinData tkn_mint_pol,
-            oracleValidator = unsafeFromBuiltinData oracle_val
+            tokenMintingPolicy = unsafeFromBuiltinData tkn_mint_pol ,
+            oracleValidator = unsafeFromBuiltinData oracle_val ,
+            developerPKH = unsafeFromBuiltinData dev_PKH
         }
 
-compiledReserveCode :: CompiledCode (BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> ())
+compiledReserveCode :: CompiledCode (BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> BuiltinData -> ())
 compiledReserveCode = $$( compile [|| wrappedReserveCode ||] )
 
 saveReserveCode :: IO()
